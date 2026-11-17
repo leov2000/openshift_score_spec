@@ -1,0 +1,39 @@
+# Route on a sub-path, plus a NetworkPolicy that admits only the OpenShift router to the routed port.
+#
+#   oc new-project route-demo
+#   bin/score-ocp -p route-demo examples/route/web.score.yaml examples/route/client.score.yaml
+#   curl -k https://$(oc get route web-route -o jsonpath='{.spec.host}')/api     -> 200
+#   oc exec deploy/client -- curl -m 5 http://web:8080/                          -> times out (policy)
+apiVersion: score.dev/v1b1
+metadata:
+  name: web
+containers:
+  main:
+    image: registry.access.redhat.com/ubi9/python-312:latest
+    command: ["python", "/app/app.py"]
+    files:
+      /app/app.py:
+        source: ../app/app.py    # relative to this file
+        noExpand: true
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        memory: 128Mi
+    readinessProbe:
+      httpGet:
+        port: 8080
+        path: /ready
+service:
+  ports:
+    http:
+      port: 8080
+resources:
+  route:
+    type: route
+    params:
+      port: http                 # service port name (or number)
+      path: /api                 # only /api and below are routed; no trailing slash
+      networkPolicy: true        # emit web-route-allow-router: only the router may reach port 8080
+      # host: web.apps.example.com   # optional; omitted -> the router assigns <route>-<namespace>.<apps domain>

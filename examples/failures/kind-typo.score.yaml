@@ -1,0 +1,10 @@
+# Typo in k8s.score.dev/kind. Stock score-k8s emits nothing and exits 0; patch 05-workload-guard fails instead.
+# expect: produced no Deployment or StatefulSet
+apiVersion: score.dev/v1b1
+metadata:
+  name: typo
+  annotations:
+    k8s.score.dev/kind: Statefulset
+containers:
+  main:
+    image: registry.access.redhat.com/ubi9/python-312:latest

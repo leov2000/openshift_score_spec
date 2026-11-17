@@ -1,0 +1,18 @@
+apiVersion: score.dev/v1b1
+metadata:
+  name: hello
+containers:
+  main:
+    image: nginx:1.27
+service:
+  ports:
+    web:
+      port: 80
+      targetPort: 8080
+resources:
+  route:
+    type: route
+    params:
+      host: hello.apps.example.com
+      path: /api
+      port: web

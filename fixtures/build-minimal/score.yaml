@@ -1,0 +1,9 @@
+apiVersion: score.dev/v1b1
+metadata:
+  name: hello
+containers:
+  main:
+    image: hello:latest
+resources:
+  build:
+    type: openshift-build

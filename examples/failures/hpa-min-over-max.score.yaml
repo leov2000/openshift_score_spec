@@ -1,0 +1,17 @@
+# hpa with minReplicas above maxReplicas.
+# expect: must not exceed params.maxReplicas
+apiVersion: score.dev/v1b1
+metadata:
+  name: minmax
+containers:
+  main:
+    image: registry.access.redhat.com/ubi9/python-312:latest
+    resources:
+      requests:
+        cpu: 10m
+resources:
+  scaling:
+    type: hpa
+    params:
+      minReplicas: 5
+      maxReplicas: 2

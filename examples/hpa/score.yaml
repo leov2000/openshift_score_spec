@@ -1,0 +1,35 @@
+# CPU autoscaling: an autoscaling/v2 HPA on the Deployment, plus a PodDisruptionBudget (maxUnavailable: 1) because
+# minReplicas >= 2. Every container needs a CPU request (patch 50-hpa-guard), or utilisation is <unknown>.
+# Scaling on CPU needs the cluster metrics API (cluster monitoring).
+#
+#   oc new-project hpa-demo
+#   bin/score-ocp -p hpa-demo examples/hpa/score.yaml
+#   oc get hpa,pdb
+apiVersion: score.dev/v1b1
+metadata:
+  name: scaler
+containers:
+  main:
+    image: registry.access.redhat.com/ubi9/python-312:latest
+    command: ["python", "/app/app.py"]
+    files:
+      /app/app.py:
+        source: ../app/app.py
+        noExpand: true
+    resources:
+      requests:
+        cpu: 20m                 # required with an hpa resource
+        memory: 32Mi
+      limits:
+        memory: 128Mi
+service:
+  ports:
+    http:
+      port: 8080
+resources:
+  scaling:
+    type: hpa
+    params:
+      minReplicas: 2
+      maxReplicas: 4
+      targetCPUUtilizationPercentage: 50

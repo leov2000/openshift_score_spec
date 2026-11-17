@@ -1,0 +1,27 @@
+apiVersion: score.dev/v1b1
+metadata:
+  name: hello
+  annotations:
+    k8s.score.dev/kind: StatefulSet
+containers:
+  main:
+    image: hello:latest
+    volumes:
+      /data:
+        source: ${resources.data}
+service:
+  ports:
+    web:
+      port: 8080
+resources:
+  data:
+    type: volume
+    params:
+      size: 5Gi
+      storageClassName: fast-ssd
+  build:
+    type: openshift-build
+  app-secrets:
+    type: openshift-secret
+    params:
+      name: hello-secrets

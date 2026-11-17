@@ -1,0 +1,13 @@
+# hpa without a CPU request on every container (patch 50-hpa-guard): the HPA could never compute utilisation.
+# expect: has no CPU request
+apiVersion: score.dev/v1b1
+metadata:
+  name: nocpu
+containers:
+  main:
+    image: registry.access.redhat.com/ubi9/python-312:latest
+resources:
+  scaling:
+    type: hpa
+    params:
+      maxReplicas: 3

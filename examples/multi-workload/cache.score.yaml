@@ -1,0 +1,38 @@
+# Stand-in for a cache: the demo app listening on 6379, as a StatefulSet with a volume and a Secret.
+apiVersion: score.dev/v1b1
+metadata:
+  name: cache
+  annotations:
+    k8s.score.dev/kind: StatefulSet
+containers:
+  main:
+    image: registry.access.redhat.com/ubi9/python-312:latest
+    command: ["python", "/app/app.py"]
+    files:
+      /app/app.py:
+        source: ../app/app.py
+        noExpand: true
+    variables:
+      PORT: "6379"
+    volumes:
+      /data:
+        source: ${resources.data}
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        memory: 128Mi
+service:
+  ports:
+    redis:
+      port: 6379
+resources:
+  data:
+    type: volume
+    params:
+      size: 1Gi
+  creds:
+    type: openshift-secret
+    params:
+      name: cache-secrets

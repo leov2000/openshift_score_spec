@@ -1,0 +1,23 @@
+# A second workload in the same namespace. web's NetworkPolicy blocks client -> web; client has no policy, so
+# web -> client still works (showing pod-to-pod traffic is otherwise open).
+apiVersion: score.dev/v1b1
+metadata:
+  name: client
+containers:
+  main:
+    image: registry.access.redhat.com/ubi9/python-312:latest
+    command: ["python", "/app/app.py"]
+    files:
+      /app/app.py:
+        source: ../app/app.py
+        noExpand: true
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        memory: 128Mi
+service:
+  ports:
+    http:
+      port: 8080

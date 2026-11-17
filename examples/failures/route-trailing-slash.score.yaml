@@ -1,0 +1,18 @@
+# Route path with a trailing slash.
+# expect: must not end with /
+apiVersion: score.dev/v1b1
+metadata:
+  name: slash
+containers:
+  main:
+    image: registry.access.redhat.com/ubi9/python-312:latest
+service:
+  ports:
+    http:
+      port: 8080
+resources:
+  route:
+    type: route
+    params:
+      port: http
+      path: /api/

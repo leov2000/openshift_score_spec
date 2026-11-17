@@ -1,0 +1,17 @@
+# Route port that is not one of the workload's service ports.
+# expect: is not a service port
+apiVersion: score.dev/v1b1
+metadata:
+  name: badport
+containers:
+  main:
+    image: registry.access.redhat.com/ubi9/python-312:latest
+service:
+  ports:
+    http:
+      port: 8080
+resources:
+  route:
+    type: route
+    params:
+      port: https

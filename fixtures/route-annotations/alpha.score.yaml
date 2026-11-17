@@ -1,0 +1,23 @@
+apiVersion: score.dev/v1b1
+metadata:
+  name: alpha
+  annotations:
+    haproxy.router.openshift.io/timeout: 120s
+    haproxy.router.openshift.io/ip_whitelist: 10.0.0.0/8 192.168.0.0/16
+    cert-manager.io/issuer-kind: ClusterIssuer
+    cert-manager.io/issuer-name: corp-ca
+    example.com/team: payments
+    router.openshift.io/cookie_name: not-copied
+containers:
+  main:
+    image: nginx:1.27
+service:
+  ports:
+    web:
+      port: 8080
+resources:
+  route:
+    type: route
+    params:
+      host: alpha.apps.example.com
+      port: web

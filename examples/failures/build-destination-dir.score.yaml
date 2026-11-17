@@ -1,0 +1,15 @@
+# Build secret with destinationDir: Docker builds would copy it into an image layer.
+# expect: destinationDir is not supported
+apiVersion: score.dev/v1b1
+metadata:
+  name: leaky
+containers:
+  main:
+    image: leaky:latest
+resources:
+  build:
+    type: openshift-build
+    params:
+      secrets:
+        - name: npmrc
+          destinationDir: secrets

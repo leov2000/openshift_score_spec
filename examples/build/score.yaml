@@ -1,0 +1,43 @@
+# Every openshift-build option. Builds this directory's Dockerfile with two build secrets.
+#
+#   oc new-project build-demo
+#   oc create secret generic npmrc --from-literal=.npmrc='//registry.npmjs.org/:_authToken=example'
+#   oc create secret generic certs --from-literal=ca.crt='example CA'
+#   bin/score-ocp -p build-demo examples/build/score.yaml     # first deploy also runs the first build
+#   oc start-build builder --from-dir=examples/build --follow --wait   # later builds; the Deployment rolls itself
+apiVersion: score.dev/v1b1
+metadata:
+  name: builder
+containers:
+  main:
+    image: builder:latest
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        memory: 128Mi
+    readinessProbe:
+      httpGet:
+        port: 8080
+        path: /
+resources:
+  build:
+    type: openshift-build
+    params:
+      resources:                       # build pod resources
+        limits:
+          cpu: "1"
+          memory: 1Gi
+      secrets:                         # build volumes, mounted for RUN steps only
+        - npmrc                        #   -> /build-secrets/npmrc
+        - name: certs
+          mountPath: /etc/pki/build-certs
+      annotations:                     # added to the ImageStreams and the BuildConfig
+        example.com/team: payments
+      imageStreams:                    # extra ImageStreams, e.g. base images mirrored into the cluster
+        - name: ubi9-python
+          tag: "312"
+          from: registry.access.redhat.com/ubi9/python-312:latest
+      # pullSecret: registry-pull      # Secret for pulling the FROM image from a private registry
+      # pushSecret: registry-push      # Secret for pushing the result (not needed for the internal registry)

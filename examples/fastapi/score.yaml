@@ -1,0 +1,44 @@
+# The FastAPI example from score-spec-nomad (examples/fastapi), for OpenShift. The workload is the same; two
+# resources are added so the bundle's provisioners do the OpenShift parts:
+#   build  (openshift-build) -> ImageStream + BuildConfig: the cluster builds the Dockerfile from the folder it's
+#                               given, which holds this file, the Dockerfile and the Linux Pixi bundle
+#                               (fastapi-hello-env.tar.gz, built with score-spec-nomad)
+#   route  (route)           -> HTTPS Route to the Service, host assigned by the router
+#
+# openshiftsteps.md builds the bundle and puts the three files in one folder.
+apiVersion: score.dev/v1b1
+metadata:
+  name: fastapi-hello
+containers:
+  api:
+    image: fastapi-hello:latest   # <workload>:latest, what the build pushes; new builds roll the Deployment
+    variables:
+      PORT: "8000"
+      GREETING: "Hello from ${metadata.name}"
+    readinessProbe:
+      httpGet:
+        path: /healthz
+        port: 8000
+    livenessProbe:
+      httpGet:
+        path: /healthz
+        port: 8000
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 100m
+        memory: 256Mi
+service:
+  ports:
+    http:
+      port: 8080
+      targetPort: 8000
+resources:
+  build:
+    type: openshift-build
+  route:
+    type: route
+    params:
+      port: http                  # the service port above; the router sends traffic to 8080 -> 8000

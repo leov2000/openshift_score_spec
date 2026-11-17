@@ -1,0 +1,21 @@
+apiVersion: score.dev/v1b1
+metadata:
+  name: hello
+  annotations:
+    example.com/team: payments
+    haproxy.router.openshift.io/timeout: 60s
+containers:
+  main:
+    image: nginx:1.27
+    livenessProbe:
+      httpGet:
+        port: 8080
+        path: /healthz
+    readinessProbe:
+      httpGet:
+        port: 8080
+        path: /ready
+service:
+  ports:
+    web:
+      port: 8080

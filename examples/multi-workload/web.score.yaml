@@ -1,0 +1,41 @@
+# Two workloads deployed together; web finds cache through the stock service-port provisioner.
+#
+#   oc new-project shop
+#   oc create secret generic cache-secrets --from-literal=CACHE_PASSWORD=changeme
+#   bin/score-ocp -p shop examples/multi-workload/web.score.yaml examples/multi-workload/cache.score.yaml
+#
+# Run again with only web.score.yaml and the cache StatefulSet and Service are pruned (its PVC is kept).
+apiVersion: score.dev/v1b1
+metadata:
+  name: web
+containers:
+  main:
+    image: registry.access.redhat.com/ubi9/python-312:latest
+    command: ["python", "/app/app.py"]
+    files:
+      /app/app.py:
+        source: ../app/app.py
+        noExpand: true
+    variables:
+      CACHE_HOST: ${resources.cache.hostname}
+      CACHE_PORT: ${resources.cache.port}
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        memory: 128Mi
+service:
+  ports:
+    http:
+      port: 8080
+resources:
+  cache:
+    type: service-port
+    params:
+      workload: cache
+      port: redis
+  route:
+    type: route
+    params:
+      port: http

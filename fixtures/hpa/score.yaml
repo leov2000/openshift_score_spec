@@ -1,0 +1,19 @@
+apiVersion: score.dev/v1b1
+metadata:
+  name: hello
+containers:
+  main:
+    image: nginx:1.27
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        memory: 256Mi
+resources:
+  scaling:
+    type: hpa
+    params:
+      minReplicas: 2
+      maxReplicas: 5
+      targetCPUUtilizationPercentage: 75

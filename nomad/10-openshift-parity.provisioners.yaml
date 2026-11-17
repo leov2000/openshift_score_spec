@@ -1,0 +1,24 @@
+# score-nomad provisioners that give the OpenShift bundle's resource types a meaning on Nomad.
+# Copy into .score-nomad/ after `score-nomad init` (files sort before zz-default.provisioners.yaml, so these win).
+#
+# Status per bundle resource type (Step 12):
+#   route            MAPPED   -> traefik. Use a numeric port (service.ports.*.port) in params.port: score-nomad
+#                               rejects port names; the OpenShift route provisioner accepts both.
+#                               params.networkPolicy is OpenShift-only and is rejected by traefik.
+#   volume           MAPPED   -> host-volume (params.size/storageClassName/accessMode are OpenShift-only).
+#   openshift-build  BLOCKED  -> should be an explicit no-op (image comes from CI on Nomad); score-nomad has no
+#                               no-op builtin, so a Score file declaring it fails on Nomad today.
+#   openshift-secret BLOCKED  -> no equivalent: envFrom injects every key, score-nomad secrets are per key
+#                               (vault / nomad-variable outputs referenced from variables).
+#   hpa              BLOCKED  -> should be an explicit no-op (Nomad Autoscaler is configured separately); no no-op
+#                               builtin in score-nomad.
+#   service-port     BLOCKED  -> stock score-k8s type, no score-nomad builtin.
+# Any type not listed in a provisioners file fails generate on both targets ("no provisioner matches").
+
+- type: route
+  provisioner: traefik
+  config:
+    entrypoint: websecure
+
+- type: volume
+  provisioner: host-volume

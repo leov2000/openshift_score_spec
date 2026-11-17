@@ -1,0 +1,18 @@
+# Volume size that is not a Kubernetes quantity.
+# expect: must be a quantity like 1Gi
+apiVersion: score.dev/v1b1
+metadata:
+  name: badsize
+  annotations:
+    k8s.score.dev/kind: StatefulSet
+containers:
+  main:
+    image: registry.access.redhat.com/ubi9/python-312:latest
+    volumes:
+      /data:
+        source: ${resources.data}
+resources:
+  data:
+    type: volume
+    params:
+      size: 10GB

@@ -1,0 +1,11 @@
+# openshift-build but no container uses <workload>:latest (patch 20-image-trigger): the build would never deploy.
+# expect: no container uses image 'mismatch:latest'
+apiVersion: score.dev/v1b1
+metadata:
+  name: mismatch
+containers:
+  main:
+    image: some-other-image:latest
+resources:
+  build:
+    type: openshift-build

@@ -1,0 +1,32 @@
+apiVersion: score.dev/v1b1
+metadata:
+  name: hello
+containers:
+  main:
+    image: hello:latest
+resources:
+  build:
+    type: openshift-build
+    params:
+      resources:
+        limits:
+          cpu: "2"
+          memory: 4Gi
+        requests:
+          cpu: 500m
+          memory: 1Gi
+      pullSecret: registry-pull
+      pushSecret: registry-push
+      secrets:
+        - npmrc
+        - name: certs
+          mountPath: /etc/pki/build-certs
+      annotations:
+        team: payments
+        cost-center: 1234
+      imageStreams:
+        - name: ubi9-node
+          tag: 20
+          from: registry.example.com/ubi9/nodejs-20:latest
+        - name: ubi9-minimal
+          from: registry.example.com/ubi9/ubi-minimal:9.5

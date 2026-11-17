@@ -1,0 +1,41 @@
+# Workload annotations with the prefixes haproxy.router.openshift.io/ and cert-manager.io/ are copied onto the
+# workload's Routes (patch 30-route-annotations). score-k8s alone puts them only on the pod template.
+#
+#   oc new-project annotations-demo
+#   bin/score-ocp -p annotations-demo examples/route-annotations/score.yaml
+#   curl -k https://$(oc get route slow-route -o jsonpath='{.spec.host}')/slow?s=35   -> 200 (router default: 504 at 30s)
+apiVersion: score.dev/v1b1
+metadata:
+  name: slow
+  annotations:
+    haproxy.router.openshift.io/timeout: 45s            # router waits 45s for a response instead of 30s
+    cert-manager.io/issuer-kind: ClusterIssuer          # copied too; acted on only if cert-manager's
+    cert-manager.io/issuer-name: corp-ca                #   openshift-routes integration is installed
+    example.com/team: payments                          # other prefixes stay on the pod template only
+containers:
+  main:
+    image: registry.access.redhat.com/ubi9/python-312:latest
+    command: ["python", "/app/app.py"]
+    files:
+      /app/app.py:
+        source: ../app/app.py
+        noExpand: true
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        memory: 128Mi
+    readinessProbe:
+      httpGet:
+        port: 8080
+        path: /ready
+service:
+  ports:
+    http:
+      port: 8080
+resources:
+  route:
+    type: route
+    params:
+      port: http

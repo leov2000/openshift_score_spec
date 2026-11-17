@@ -1,0 +1,6 @@
+/.bin/
+manifests.yaml
+.score-k8s/
+.score-nomad/
+/secret/
+.DS_Store

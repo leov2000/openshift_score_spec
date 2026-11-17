@@ -1,0 +1,425 @@
+# OpenShift provisioners for score-k8s.
+#
+# Install with:  score-k8s init --provisioners provisioners/openshift.provisioners.yaml --patch-templates patches/<each>.tpl
+# Provisioners installed with --provisioners take precedence over zz-default.provisioners.yaml (first match wins).
+#
+# Rules followed by every provisioner here:
+#   - Names are derived from .SourceWorkload and the resource name, never .Guid or random values, so two runs in
+#     fresh directories produce byte-identical output (required for stateless CI and `oc apply --prune`).
+#   - Every emitted object carries k8s.score.dev/source-workload so patch templates can find it.
+
+# ---------------------------------------------------------------------------------------------------------------------
+# route: OpenShift Route with edge TLS to the workload's Service.
+#
+#   resources:
+#     route:
+#       type: route
+#       params:
+#         host: app.apps.example.com   # optional; omitted -> the router assigns one
+#         path: /                      # optional, default "/"; must start with / and must not end with /
+#         port: web                    # required; a service port name (or its number)
+#         networkPolicy: true          # optional; also emit an allow-from-router NetworkPolicy for that port
+#
+# PLATFORM: set $networkPolicyDefault to true when tenant namespaces are default-deny. Leave it false otherwise:
+# any NetworkPolicy that selects a pod isolates it, cutting off traffic the policy does not allow.
+# ---------------------------------------------------------------------------------------------------------------------
+- uri: template://openshift/route
+  type: route
+  description: Provisions an OpenShift Route (edge TLS, HTTP redirected to HTTPS) to the workload's Service.
+  init: |
+    {{- $networkPolicyDefault := false }}
+    {{- range $k, $_ := .Params }}{{ if not (has $k (list "host" "path" "port" "networkPolicy")) }}{{ fail (printf "route: unsupported param '%s' (supported: host, path, port, networkPolicy)" $k) }}{{ end }}{{ end }}
+    {{- $svc := index .WorkloadServices .SourceWorkload }}
+    {{- if or (not $svc) (not $svc.Ports) }}{{ fail (printf "route: workload '%s' has no service ports" .SourceWorkload) }}{{ end }}
+    {{- if not (hasKey .Params "port") }}{{ fail "route: params.port is required (a service port name)" }}{{ end }}
+    {{- $port := index $svc.Ports (print .Params.port) }}
+    {{- if not $port.Name }}{{ fail (printf "route: params.port '%v' is not a service port of workload '%s'" .Params.port .SourceWorkload) }}{{ end }}
+    {{- $path := default "/" .Params.path }}
+    {{- if not (regexMatch `^(/|(/[^/\s]+)+)$` $path) }}{{ fail (printf "route: params.path '%s' must start with / and must not end with /" $path) }}{{ end }}
+    {{- $host := default "" .Params.host }}
+    {{- if and $host (or (gt (len $host) 253) (not (regexMatch `^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$` $host))) }}{{ fail (printf "route: params.host '%s' is not a valid hostname" $host) }}{{ end }}
+    {{- $res := trimPrefix (print .SourceWorkload ".") .Id }}
+    name: {{ printf "%s-%s" .SourceWorkload $res | lower | replace "_" "-" | replace "." "-" | trunc 63 | trimSuffix "-" | quote }}
+    host: {{ $host | quote }}
+    path: {{ $path | quote }}
+    portName: {{ $port.Name | quote }}
+    targetPort: {{ $port.TargetPort }}
+    protocol: {{ upper (toString (default "TCP" $port.Protocol)) | quote }}
+    serviceName: {{ $svc.ServiceName | quote }}
+    networkPolicy: {{ ternary .Params.networkPolicy $networkPolicyDefault (hasKey .Params "networkPolicy") | toString | eq "true" }}
+  state: |
+    routeName: {{ .Init.name | quote }}
+  outputs: |
+    name: {{ .State.routeName | quote }}
+    {{- if .Init.host }}
+    host: {{ .Init.host | quote }}
+    url: {{ printf "https://%s%s" .Init.host (ternary "" .Init.path (eq .Init.path "/")) | quote }}
+    {{- end }}
+  manifests: |
+    - apiVersion: route.openshift.io/v1
+      kind: Route
+      metadata:
+        name: {{ .State.routeName | quote }}
+        annotations:
+          k8s.score.dev/source-workload: {{ .SourceWorkload | quote }}
+          k8s.score.dev/resource-uid: {{ .Uid | quote }}
+        labels:
+          app.kubernetes.io/managed-by: score-k8s
+          app.kubernetes.io/name: {{ .SourceWorkload | quote }}
+          app.kubernetes.io/instance: {{ .SourceWorkload | quote }}
+      spec:
+        {{- if .Init.host }}
+        host: {{ .Init.host | quote }}
+        {{- end }}
+        path: {{ .Init.path | quote }}
+        to:
+          kind: Service
+          name: {{ .Init.serviceName | quote }}
+          weight: 100
+        port:
+          targetPort: {{ .Init.portName | quote }}
+        tls:
+          termination: edge
+          insecureEdgeTerminationPolicy: Redirect
+        wildcardPolicy: None
+    {{- if .Init.networkPolicy }}
+    - apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: {{ printf "%s-allow-router" .State.routeName | trunc 253 | quote }}
+        annotations:
+          k8s.score.dev/source-workload: {{ .SourceWorkload | quote }}
+          k8s.score.dev/resource-uid: {{ .Uid | quote }}
+        labels:
+          app.kubernetes.io/managed-by: score-k8s
+          app.kubernetes.io/name: {{ .SourceWorkload | quote }}
+          app.kubernetes.io/instance: {{ .SourceWorkload | quote }}
+      spec:
+        podSelector:
+          matchLabels:
+            app.kubernetes.io/name: {{ .SourceWorkload | quote }}
+            app.kubernetes.io/managed-by: score-k8s
+        policyTypes:
+          - Ingress
+        ingress:
+          - from:
+              - namespaceSelector:
+                  matchLabels:
+                    network.openshift.io/policy-group: ingress
+            ports:
+              - port: {{ .Init.targetPort }}
+                protocol: {{ .Init.protocol | quote }}
+    {{- end }}
+  supported_params:
+    - host
+    - path
+    - port
+    - networkPolicy
+  expected_outputs:
+    - name
+    - host
+    - url
+
+# ---------------------------------------------------------------------------------------------------------------------
+# openshift-build: the workload's ImageStream (local lookup) and a binary Docker-strategy BuildConfig that pushes to
+# <workload>:latest. One per workload. Pair with `image: <workload>:latest` on the container and the
+# 20-image-trigger.tpl patch so new builds roll the workload.
+#
+#   resources:
+#     build:
+#       type: openshift-build
+#       params:                                  # all optional
+#         resources: {limits: {cpu: "2", memory: 4Gi}}
+#         pullSecret: registry-pull              # strategy.dockerStrategy.pullSecret
+#         pushSecret: registry-push              # output.pushSecret
+#         secrets:                               # build volumes: name, or {name, mountPath}
+#           - npmrc                              #   mounted read-only at /build-secrets/npmrc for RUN steps
+#           - {name: certs, mountPath: /etc/pki/build-certs}
+#         annotations: {team: payments}          # added to every object this provisioner emits
+#         imageStreams:                          # extra ImageStreams, e.g. mirrored base images
+#           - {name: ubi9-node, tag: "20", from: registry.example.com/ubi9/nodejs-20:latest}
+#
+# Build secrets use dockerStrategy.volumes, not source.secrets: for the Docker strategy, source.secrets are copied
+# into the build context, reachable only via COPY/ADD, and stay in that image layer (OpenShift docs, "Input secrets
+# and config maps" > "Docker strategy"). Build volumes are mounted for RUN steps only and never committed.
+# ---------------------------------------------------------------------------------------------------------------------
+- uri: template://openshift/openshift-build
+  type: openshift-build
+  description: Provisions the workload ImageStream and a binary Docker-strategy BuildConfig.
+  init: |
+    {{- $allowed := list "resources" "pullSecret" "pushSecret" "secrets" "annotations" "imageStreams" }}
+    {{- range $k, $_ := .Params }}{{ if not (has $k $allowed) }}{{ fail (printf "openshift-build: unsupported param '%s' (supported: %s)" $k (join ", " $allowed)) }}{{ end }}{{ end }}
+    {{- $secrets := list }}
+    {{- range $i, $s := (default list .Params.secrets) }}
+    {{- $e := dict }}
+    {{- if kindIs "string" $s }}{{ $e = dict "name" $s }}
+    {{- else if and (kindIs "map" $s) $s.name }}
+    {{- if hasKey $s "destinationDir" }}{{ fail (printf "openshift-build: params.secrets[%d].destinationDir is not supported: Docker builds copy such secrets into the image layer; use mountPath (an absolute path) instead" $i) }}{{ end }}
+    {{- range $k, $_ := $s }}{{ if not (has $k (list "name" "mountPath")) }}{{ fail (printf "openshift-build: params.secrets[%d].%s is not supported (supported: name, mountPath)" $i $k) }}{{ end }}{{ end }}
+    {{- $e = pick $s "name" "mountPath" }}
+    {{- else }}{{ fail (printf "openshift-build: params.secrets[%d] must be a name or {name, mountPath}" $i) }}{{ end }}
+    {{- $mp := toString (default (printf "/build-secrets/%s" $e.name) $e.mountPath) }}
+    {{- if or (not (hasPrefix "/" $mp)) (contains ".." $mp) (contains ":" $mp) (eq $mp "/") }}{{ fail (printf "openshift-build: params.secrets[%d].mountPath '%s' must be an absolute path without '..' or ':'" $i $mp) }}{{ end }}
+    {{- $vol := printf "secret-%s" $e.name | lower | replace "." "-" | trunc 63 | trimSuffix "-" }}
+    {{- $secrets = append $secrets (dict "name" (toString $e.name) "mountPath" $mp "volume" $vol) }}
+    {{- end }}
+    {{- $streams := list }}
+    {{- range $i, $s := (default list .Params.imageStreams) }}
+    {{- if or (not (kindIs "map" $s)) (not $s.name) (not $s.from) }}{{ fail (printf "openshift-build: params.imageStreams[%d] needs name and from" $i) }}{{ end }}
+    {{- $streams = append $streams (dict "name" $s.name "tag" (toString (default "latest" $s.tag)) "from" $s.from) }}
+    {{- end }}
+    {{- $ann := dict }}
+    {{- range $k, $v := (default dict .Params.annotations) }}{{ $_ := set $ann $k (toString $v) }}{{ end }}
+    {{- $_ := set $ann "k8s.score.dev/source-workload" .SourceWorkload }}
+    name: {{ .SourceWorkload | quote }}
+    annotations: {{ toJson $ann }}
+    secrets: {{ toJson $secrets }}
+    imageStreams: {{ toJson $streams }}
+  state: |
+    name: {{ .Init.name | quote }}
+  outputs: |
+    image: {{ printf "%s:latest" .State.name | quote }}
+    imageStream: {{ .State.name | quote }}
+    buildConfig: {{ .State.name | quote }}
+  manifests: |
+    {{- $labels := dict "app.kubernetes.io/managed-by" "score-k8s" "app.kubernetes.io/name" .SourceWorkload "app.kubernetes.io/instance" .SourceWorkload }}
+    - apiVersion: image.openshift.io/v1
+      kind: ImageStream
+      metadata:
+        name: {{ .State.name | quote }}
+        annotations: {{ toJson .Init.annotations }}
+        labels: {{ toJson $labels }}
+      spec:
+        lookupPolicy:
+          local: true
+    - apiVersion: build.openshift.io/v1
+      kind: BuildConfig
+      metadata:
+        name: {{ .State.name | quote }}
+        annotations: {{ toJson .Init.annotations }}
+        labels: {{ toJson $labels }}
+      spec:
+        runPolicy: Serial
+        source:
+          type: Binary
+          binary: {}
+        strategy:
+          type: Docker
+          dockerStrategy:
+            {{- if not (or .Params.pullSecret .Init.secrets) }} {}{{ end }}
+            {{- if .Params.pullSecret }}
+            pullSecret:
+              name: {{ .Params.pullSecret | quote }}
+            {{- end }}
+            {{- if .Init.secrets }}
+            volumes:
+            {{- range .Init.secrets }}
+              - name: {{ .volume | quote }}
+                source:
+                  type: Secret
+                  secret:
+                    secretName: {{ .name | quote }}
+                mounts:
+                  - destinationPath: {{ .mountPath | quote }}
+            {{- end }}
+            {{- end }}
+        output:
+          to:
+            kind: ImageStreamTag
+            name: {{ printf "%s:latest" .State.name | quote }}
+          {{- if .Params.pushSecret }}
+          pushSecret:
+            name: {{ .Params.pushSecret | quote }}
+          {{- end }}
+        {{- if .Params.resources }}
+        resources: {{ toJson .Params.resources }}
+        {{- end }}
+    {{- range .Init.imageStreams }}
+    - apiVersion: image.openshift.io/v1
+      kind: ImageStream
+      metadata:
+        name: {{ .name | quote }}
+        annotations: {{ toJson $.Init.annotations }}
+        labels: {{ toJson $labels }}
+      spec:
+        tags:
+          - name: {{ .tag | quote }}
+            from:
+              kind: DockerImage
+              name: {{ .from | quote }}
+    {{- end }}
+  supported_params:
+    - resources
+    - pullSecret
+    - pushSecret
+    - secrets
+    - annotations
+    - imageStreams
+  expected_outputs:
+    - image
+    - imageStream
+    - buildConfig
+
+# ---------------------------------------------------------------------------------------------------------------------
+# openshift-secret: reference an existing Secret by name. Emits nothing and stores no values; the
+# 40-secret-envfrom.tpl patch adds `envFrom: [{secretRef: {name}}]` to every container of the workload.
+#
+#   resources:
+#     app-secrets:
+#       type: openshift-secret
+#       params:
+#         name: hello-secrets
+# ---------------------------------------------------------------------------------------------------------------------
+- uri: template://openshift/openshift-secret
+  type: openshift-secret
+  description: References an existing Secret; its keys are injected into every container via envFrom.
+  init: |
+    {{- range $k, $_ := .Params }}{{ if ne $k "name" }}{{ fail (printf "openshift-secret: unsupported param '%s' (supported: name)" $k) }}{{ end }}{{ end }}
+    {{- $name := toString (default "" .Params.name) }}
+    {{- if not $name }}{{ fail "openshift-secret: params.name is required" }}{{ end }}
+    {{- if or (gt (len $name) 253) (not (regexMatch `^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$` $name)) }}{{ fail (printf "openshift-secret: params.name '%s' is not a valid Secret name" $name) }}{{ end }}
+    name: {{ $name | quote }}
+  outputs: |
+    name: {{ .Init.name | quote }}
+  supported_params:
+    - name
+  expected_outputs:
+    - name
+
+# ---------------------------------------------------------------------------------------------------------------------
+# volume: persistent storage. Replaces the stock emptyDir provisioner.
+#   - StatefulSet workloads (k8s.score.dev/kind: StatefulSet): a volumeClaimTemplate, one PVC per replica.
+#   - Deployment workloads: one shared PVC named <workload>-<resource>, mounted by every replica.
+#
+#   resources:
+#     data:
+#       type: volume
+#       params:                             # all optional
+#         size: 5Gi                         # default 1Gi
+#         storageClassName: gp3-csi         # default: omitted (cluster default class)
+#         accessMode: ReadWriteOnce         # default ReadWriteOnce
+#
+# PLATFORM: set $allowedClasses below to the storage classes tenants may use. Empty list = any class.
+# ---------------------------------------------------------------------------------------------------------------------
+- uri: template://openshift/volume
+  type: volume
+  description: Persistent volume; volumeClaimTemplate on StatefulSets, shared PVC on Deployments.
+  init: |
+    {{- $allowedClasses := list }}
+    {{- $allowedParams := list "size" "storageClassName" "accessMode" }}
+    {{- range $k, $_ := .Params }}{{ if not (has $k $allowedParams) }}{{ fail (printf "volume: unsupported param '%s' (supported: %s)" $k (join ", " $allowedParams)) }}{{ end }}{{ end }}
+    {{- $size := toString (default "1Gi" .Params.size) }}
+    {{- if not (regexMatch `^[0-9]+(\.[0-9]+)?(Ki|Mi|Gi|Ti)$` $size) }}{{ fail (printf "volume: params.size '%s' must be a quantity like 1Gi" $size) }}{{ end }}
+    {{- $mode := toString (default "ReadWriteOnce" .Params.accessMode) }}
+    {{- if not (has $mode (list "ReadWriteOnce" "ReadWriteOncePod" "ReadWriteMany" "ReadOnlyMany")) }}{{ fail (printf "volume: params.accessMode '%s' is not a valid access mode" $mode) }}{{ end }}
+    {{- $class := toString (default "" .Params.storageClassName) }}
+    {{- if and $class $allowedClasses (not (has $class $allowedClasses)) }}{{ fail (printf "volume: storage class '%s' is not allowed (allowed: %s)" $class (join ", " $allowedClasses)) }}{{ end }}
+    {{- $kind := dig "annotations" "k8s.score.dev/kind" "Deployment" (default dict .WorkloadMetadata) }}
+    {{- $res := trimPrefix (print .SourceWorkload ".") .Id }}
+    name: {{ printf "%s-%s" .SourceWorkload $res | lower | replace "_" "-" | replace "." "-" | trunc 63 | trimSuffix "-" | quote }}
+    kind: {{ $kind | quote }}
+    size: {{ $size | quote }}
+    accessMode: {{ $mode | quote }}
+    storageClassName: {{ $class | quote }}
+  outputs: |
+    {{- $spec := dict "accessModes" (list .Init.accessMode) "resources" (dict "requests" (dict "storage" .Init.size)) }}
+    {{- if .Init.storageClassName }}{{ $_ := set $spec "storageClassName" .Init.storageClassName }}{{ end }}
+    {{- if eq .Init.kind "StatefulSet" }}
+    claimSpec: {{ toJson $spec }}
+    {{- else }}
+    source:
+      persistentVolumeClaim:
+        claimName: {{ .Init.name | quote }}
+    {{- end }}
+  manifests: |
+    {{- if ne .Init.kind "StatefulSet" }}
+    {{- $spec := dict "accessModes" (list .Init.accessMode) "resources" (dict "requests" (dict "storage" .Init.size)) }}
+    {{- if .Init.storageClassName }}{{ $_ := set $spec "storageClassName" .Init.storageClassName }}{{ end }}
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: {{ .Init.name | quote }}
+        annotations:
+          k8s.score.dev/source-workload: {{ .SourceWorkload | quote }}
+          k8s.score.dev/resource-uid: {{ .Uid | quote }}
+        labels:
+          app.kubernetes.io/managed-by: score-k8s
+          app.kubernetes.io/name: {{ .SourceWorkload | quote }}
+          app.kubernetes.io/instance: {{ .SourceWorkload | quote }}
+      spec: {{ toJson $spec }}
+    {{- end }}
+  supported_params:
+    - size
+    - storageClassName
+    - accessMode
+  expected_outputs:
+    - source
+    - claimSpec
+
+# ---------------------------------------------------------------------------------------------------------------------
+# hpa: autoscaling/v2 HorizontalPodAutoscaler on CPU utilisation for the workload's Deployment or StatefulSet,
+# plus a PodDisruptionBudget (maxUnavailable: 1) when minReplicas >= 2. The 50-hpa-guard.tpl patch fails generate
+# when a container has no CPU request, since utilisation would be <unknown>.
+#
+#   resources:
+#     scaling:
+#       type: hpa
+#       params:
+#         maxReplicas: 5                    # required
+#         minReplicas: 2                    # default 1
+#         targetCPUUtilizationPercentage: 75 # default 80
+# ---------------------------------------------------------------------------------------------------------------------
+- uri: template://openshift/hpa
+  type: hpa
+  description: HorizontalPodAutoscaler (CPU) for the workload, plus a PodDisruptionBudget when minReplicas >= 2.
+  init: |
+    {{- $allowed := list "minReplicas" "maxReplicas" "targetCPUUtilizationPercentage" }}
+    {{- range $k, $_ := .Params }}{{ if not (has $k $allowed) }}{{ fail (printf "hpa: unsupported param '%s' (supported: %s)" $k (join ", " $allowed)) }}{{ end }}{{ end }}
+    {{- if not (hasKey .Params "maxReplicas") }}{{ fail "hpa: params.maxReplicas is required" }}{{ end }}
+    {{- range $k := $allowed }}{{ if and (hasKey $.Params $k) (not (regexMatch `^[0-9]+$` (toString (get $.Params $k)))) }}{{ fail (printf "hpa: params.%s must be a positive integer" $k) }}{{ end }}{{ end }}
+    {{- $max := int .Params.maxReplicas }}
+    {{- $min := int (default 1 .Params.minReplicas) }}
+    {{- $cpu := int (default 80 .Params.targetCPUUtilizationPercentage) }}
+    {{- if lt $min 1 }}{{ fail "hpa: params.minReplicas must be >= 1" }}{{ end }}
+    {{- if gt $min $max }}{{ fail (printf "hpa: params.minReplicas (%d) must not exceed params.maxReplicas (%d)" $min $max) }}{{ end }}
+    {{- if or (lt $cpu 1) (gt $cpu 100) }}{{ fail "hpa: params.targetCPUUtilizationPercentage must be between 1 and 100" }}{{ end }}
+    {{- $kind := dig "annotations" "k8s.score.dev/kind" "Deployment" (default dict .WorkloadMetadata) }}
+    {{- if not (has $kind (list "Deployment" "StatefulSet")) }}{{ fail (printf "hpa: unsupported workload kind '%s'" $kind) }}{{ end }}
+    min: {{ $min }}
+    max: {{ $max }}
+    cpu: {{ $cpu }}
+    kind: {{ $kind | quote }}
+  manifests: |
+    {{- $meta := dict "name" .SourceWorkload "annotations" (dict "k8s.score.dev/source-workload" .SourceWorkload "k8s.score.dev/resource-uid" .Uid) "labels" (dict "app.kubernetes.io/managed-by" "score-k8s" "app.kubernetes.io/name" .SourceWorkload "app.kubernetes.io/instance" .SourceWorkload) }}
+    - apiVersion: autoscaling/v2
+      kind: HorizontalPodAutoscaler
+      metadata: {{ toJson $meta }}
+      spec:
+        scaleTargetRef:
+          apiVersion: apps/v1
+          kind: {{ .Init.kind | quote }}
+          name: {{ .SourceWorkload | quote }}
+        minReplicas: {{ .Init.min }}
+        maxReplicas: {{ .Init.max }}
+        metrics:
+          - type: Resource
+            resource:
+              name: cpu
+              target:
+                type: Utilization
+                averageUtilization: {{ .Init.cpu }}
+    {{- if ge (int .Init.min) 2 }}
+    - apiVersion: policy/v1
+      kind: PodDisruptionBudget
+      metadata: {{ toJson $meta }}
+      spec:
+        maxUnavailable: 1
+        selector:
+          matchLabels:
+            app.kubernetes.io/name: {{ .SourceWorkload | quote }}
+            app.kubernetes.io/managed-by: score-k8s
+    {{- end }}
+  supported_params:
+    - minReplicas
+    - maxReplicas
+    - targetCPUUtilizationPercentage

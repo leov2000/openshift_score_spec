@@ -1,0 +1,355 @@
+---
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  annotations:
+    k8s.score.dev/source-workload: web
+  labels:
+    app.kubernetes.io/instance: web
+    app.kubernetes.io/managed-by: score-k8s
+    app.kubernetes.io/name: web
+    app.kubernetes.io/part-of: shop
+  name: web
+  namespace: shop-dev
+spec:
+  output:
+    to:
+      kind: ImageStreamTag
+      name: web:latest
+  resources:
+    limits:
+      cpu: "2"
+      memory: 2Gi
+  runPolicy: Serial
+  source:
+    binary: {}
+    type: Binary
+  strategy:
+    dockerStrategy:
+      volumes:
+        - mounts:
+            - destinationPath: /build-secrets/npmrc
+          name: secret-npmrc
+          source:
+            secret:
+              secretName: npmrc
+            type: Secret
+    type: Docker
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  annotations:
+    image.openshift.io/triggers: '[{"fieldPath":"spec.template.spec.containers[?(@.name==\"main\")].image","from":{"kind":"ImageStreamTag","name":"web:latest"},"paused":false}]'
+    k8s.score.dev/workload-name: web
+  labels:
+    app.kubernetes.io/instance: web
+    app.kubernetes.io/managed-by: score-k8s
+    app.kubernetes.io/name: web
+    app.kubernetes.io/part-of: shop
+  name: web
+  namespace: shop-dev
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: web
+  strategy: {}
+  template:
+    metadata:
+      annotations:
+        cert-manager.io/issuer-kind: ClusterIssuer
+        cert-manager.io/issuer-name: corp-ca
+        example.com/team: payments
+        haproxy.router.openshift.io/timeout: 120s
+        k8s.score.dev/workload-name: web
+      labels:
+        app.kubernetes.io/instance: web
+        app.kubernetes.io/managed-by: score-k8s
+        app.kubernetes.io/name: web
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - env:
+            - name: CACHE_HOST
+              value: cache
+            - name: CACHE_PORT
+              value: "6379"
+          envFrom:
+            - secretRef:
+                name: web-secrets
+          image: web:latest
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+          name: main
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+          resources:
+            limits:
+              memory: 256Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            privileged: false
+            readOnlyRootFilesystem: true
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+status: {}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  annotations:
+    k8s.score.dev/resource-uid: hpa.default#web.scaling
+    k8s.score.dev/source-workload: web
+  labels:
+    app.kubernetes.io/instance: web
+    app.kubernetes.io/managed-by: score-k8s
+    app.kubernetes.io/name: web
+    app.kubernetes.io/part-of: shop
+  name: web
+  namespace: shop-dev
+spec:
+  maxReplicas: 6
+  metrics:
+    - resource:
+        name: cpu
+        target:
+          averageUtilization: 80
+          type: Utilization
+      type: Resource
+  minReplicas: 2
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: web
+---
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  annotations:
+    k8s.score.dev/source-workload: web
+  labels:
+    app.kubernetes.io/instance: web
+    app.kubernetes.io/managed-by: score-k8s
+    app.kubernetes.io/name: web
+    app.kubernetes.io/part-of: shop
+  name: ubi9-node
+  namespace: shop-dev
+spec:
+  tags:
+    - from:
+        kind: DockerImage
+        name: registry.example.com/ubi9/nodejs-20:latest
+      name: "20"
+---
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  annotations:
+    k8s.score.dev/source-workload: web
+  labels:
+    app.kubernetes.io/instance: web
+    app.kubernetes.io/managed-by: score-k8s
+    app.kubernetes.io/name: web
+    app.kubernetes.io/part-of: shop
+  name: web
+  namespace: shop-dev
+spec:
+  lookupPolicy:
+    local: true
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  annotations:
+    k8s.score.dev/resource-uid: hpa.default#web.scaling
+    k8s.score.dev/source-workload: web
+  labels:
+    app.kubernetes.io/instance: web
+    app.kubernetes.io/managed-by: score-k8s
+    app.kubernetes.io/name: web
+    app.kubernetes.io/part-of: shop
+  name: web
+  namespace: shop-dev
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/managed-by: score-k8s
+      app.kubernetes.io/name: web
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  annotations:
+    cert-manager.io/issuer-kind: ClusterIssuer
+    cert-manager.io/issuer-name: corp-ca
+    haproxy.router.openshift.io/timeout: 120s
+    k8s.score.dev/resource-uid: route.default#web.route
+    k8s.score.dev/source-workload: web
+  labels:
+    app.kubernetes.io/instance: web
+    app.kubernetes.io/managed-by: score-k8s
+    app.kubernetes.io/name: web
+    app.kubernetes.io/part-of: shop
+  name: web-route
+  namespace: shop-dev
+spec:
+  host: web.apps.example.com
+  path: /
+  port:
+    targetPort: http
+  tls:
+    insecureEdgeTerminationPolicy: Redirect
+    termination: edge
+  to:
+    kind: Service
+    name: web
+    weight: 100
+  wildcardPolicy: None
+---
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    k8s.score.dev/workload-name: cache
+  labels:
+    app.kubernetes.io/instance: cache
+    app.kubernetes.io/managed-by: score-k8s
+    app.kubernetes.io/name: cache
+    app.kubernetes.io/part-of: shop
+  name: cache
+  namespace: shop-dev
+spec:
+  ports:
+    - name: redis
+      port: 6379
+      protocol: TCP
+      targetPort: 6379
+  selector:
+    app.kubernetes.io/instance: cache
+status:
+  loadBalancer: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    k8s.score.dev/workload-name: cache
+  labels:
+    app.kubernetes.io/instance: cache
+    app.kubernetes.io/managed-by: score-k8s
+    app.kubernetes.io/name: cache
+    app.kubernetes.io/part-of: shop
+  name: cache-headless-svc
+  namespace: shop-dev
+spec:
+  clusterIP: None
+  ports:
+    - name: default
+      port: 99
+      targetPort: 99
+  selector:
+    app.kubernetes.io/instance: cache
+status:
+  loadBalancer: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    k8s.score.dev/workload-name: web
+  labels:
+    app.kubernetes.io/instance: web
+    app.kubernetes.io/managed-by: score-k8s
+    app.kubernetes.io/name: web
+    app.kubernetes.io/part-of: shop
+  name: web
+  namespace: shop-dev
+spec:
+  ports:
+    - name: http
+      port: 80
+      protocol: TCP
+      targetPort: 8080
+  selector:
+    app.kubernetes.io/instance: web
+status:
+  loadBalancer: {}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  annotations:
+    k8s.score.dev/workload-name: cache
+  labels:
+    app.kubernetes.io/instance: cache
+    app.kubernetes.io/managed-by: score-k8s
+    app.kubernetes.io/name: cache
+    app.kubernetes.io/part-of: shop
+  name: cache
+  namespace: shop-dev
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: cache
+  serviceName: cache-headless-svc
+  template:
+    metadata:
+      annotations:
+        k8s.score.dev/workload-name: cache
+      labels:
+        app.kubernetes.io/instance: cache
+        app.kubernetes.io/managed-by: score-k8s
+        app.kubernetes.io/name: cache
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - envFrom:
+            - secretRef:
+                name: cache-secrets
+          image: registry.example.com/redis:7
+          name: redis
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            privileged: false
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - mountPath: /data
+              name: vol-5908aee776
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+  updateStrategy: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: vol-5908aee776
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 2Gi
+      status: {}
+status:
+  availableReplicas: 0
+  replicas: 0

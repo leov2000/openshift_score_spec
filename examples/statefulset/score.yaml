@@ -1,0 +1,44 @@
+# StatefulSet with persistent storage: the volume resource becomes a volumeClaimTemplate, one PVC per replica
+# (vol-<hash>-store-0; score-k8s names the claim after the mount). The restricted-v2 SCC assigns an fsGroup, so
+# the pod's random UID can write to the volume.
+#
+#   oc new-project stateful-demo
+#   bin/score-ocp -p stateful-demo examples/statefulset/score.yaml
+#   oc exec store-0 -- sh -c 'echo kept > /data/note'; oc delete pod store-0
+#   oc exec store-0 -- cat /data/note     -> kept
+#
+# k8s.score.dev/kind must be exactly Deployment or StatefulSet. A typo fails generate (patch 05-workload-guard);
+# stock score-k8s would emit nothing and exit 0, and an apply --prune would then delete the running workload.
+apiVersion: score.dev/v1b1
+metadata:
+  name: store
+  annotations:
+    k8s.score.dev/kind: StatefulSet
+containers:
+  main:
+    image: registry.access.redhat.com/ubi9/python-312:latest
+    command: ["python", "/app/app.py"]
+    files:
+      /app/app.py:
+        source: ../app/app.py
+        noExpand: true
+    volumes:
+      /data:
+        source: ${resources.data}
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        memory: 128Mi
+service:
+  ports:
+    http:
+      port: 8080
+resources:
+  data:
+    type: volume
+    params:
+      size: 1Gi
+      # storageClassName: gp3-csi     # optional; omitted -> the cluster's default class
+      # accessMode: ReadWriteOnce     # default

@@ -1,0 +1,33 @@
+# A volume on a Deployment: one PVC named <workload>-<resource> (here files-uploads), shared by every replica.
+# Use ReadWriteMany for replicas spread over several nodes, if the storage class supports it.
+#
+#   oc new-project shared-demo
+#   bin/score-ocp -p shared-demo examples/shared-volume/score.yaml
+#
+# score-ocp does not prune PVCs unless SCORE_OCP_PRUNE_PVC=1 (pruning deletes the data).
+apiVersion: score.dev/v1b1
+metadata:
+  name: files
+containers:
+  main:
+    image: registry.access.redhat.com/ubi9/python-312:latest
+    command: ["python", "/app/app.py"]
+    files:
+      /app/app.py:
+        source: ../app/app.py
+        noExpand: true
+    volumes:
+      /uploads:
+        source: ${resources.uploads}
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        memory: 128Mi
+resources:
+  uploads:
+    type: volume
+    params:
+      size: 1Gi
+      accessMode: ReadWriteOnce
